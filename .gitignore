@@ -3,3 +3,4 @@ images
 .DS_Store
 build./public/data/ditaduranuncamais.jso
 ./public/images/ditadura_images
+public/data/ditaduranuncamais.json
