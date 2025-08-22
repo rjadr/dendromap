@@ -14,6 +14,8 @@
 		hasPredictedClass,
 		imagesToHighlight,
 	} from "../stores/sidebarStore";
+	import { globalLeafNodesObject } from "../stores/globalDataStore";
+	import { allInstances, filteredInstances, activeFilters, filtersExpanded, hasActiveFilters, updateFilteredData } from "../stores/filterStore";
 	import Label from "./sidebarComponents/Label.svelte";
 	import ClassTable from "./classTable/ClassTable.svelte";
 	import SimilarImages from "./SimilarImages.svelte";
@@ -22,11 +24,11 @@
 	import Switch from "./sidebarComponents/Switch.svelte";
 	import Slider from "./sidebarComponents/Slider.svelte";
 	import Name from "./article/Name.svelte";
+	import FilterPanel from "./FilterPanel.svelte";
 
 	const dispatch = createEventDispatcher();
 
 	export let classes; // array of strings containing the class names
-	export let animateClassTable = false;
 	export let articleSidebarOpen = false;
 	export let options; // options that show the dataset and endpoints
 	export let selectedOption; // current select option index
@@ -46,6 +48,27 @@
 	async function updateSetting(imageSize, numClusters) {
 		await treemapImageSize.set(imageSize);
 		await treemapNumClusters.set(numClusters);
+	}
+
+	// Handle filter changes
+	function handleFiltersChanged(event) {
+		const { filteredInstances: newFilteredInstances, activeFilters: newActiveFilters } = event.detail;
+		updateFilteredData(newFilteredInstances, newActiveFilters);
+		
+		// Dispatch filtered data to parent component
+		dispatch("dataFiltered", {
+			filteredInstances: newFilteredInstances,
+			activeFilters: newActiveFilters
+		});
+	}
+
+	// Update all instances when global data changes
+	$: if ($globalLeafNodesObject.array.length > 0) {
+		allInstances.set($globalLeafNodesObject.array);
+		// If no filters are active, also update filtered instances
+		if (!$hasActiveFilters) {
+			filteredInstances.set($globalLeafNodesObject.array);
+		}
 	}
 
 	$: cpyClasses = classes ? classes.map((className) => className) : [];
@@ -80,6 +103,9 @@
 					highlightIncorrectImages.set(false);
 					highlightSimilarImages.set(false);
 					imagesToHighlight.set([]);
+					// Reset filters when dataset changes
+					activeFilters.set([]);
+					filtersExpanded.set(false);
 				}}
 			>
 				{#each options as option, i}
@@ -89,6 +115,22 @@
 		</Label>
 	</div>
 	<div class="hor-line" />
+
+	<!-- Data Filters Section -->
+	<div class="sidebar-item">
+		<FilterPanel 
+			allInstances={$allInstances}
+			bind:expanded={$filtersExpanded}
+			on:filtersChanged={handleFiltersChanged}
+		/>
+		{#if $hasActiveFilters}
+			<div class="filter-status">
+				<span class="filter-indicator">
+					📊 {$filteredInstances.length} of {$allInstances.length} items shown
+				</span>
+			</div>
+		{/if}
+	</div>
 
 	<div class="sidebar-item" id="visualization-settings">
 		<BigLabel label="Settings">
@@ -291,5 +333,19 @@
 	}
 	span.medium {
 		font-weight: 600;
+	}
+
+	.filter-status {
+		margin-top: 8px;
+		padding: 6px 10px;
+		background: #e3f2fd;
+		border: 1px solid #bbdefb;
+		border-radius: 3px;
+		font-size: 11px;
+	}
+
+	.filter-indicator {
+		color: #1565c0;
+		font-weight: 500;
 	}
 </style>

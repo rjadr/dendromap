@@ -1,5 +1,5 @@
 <script>
-	import { givenInstanceIdGetLeafNodeMap as IdToLeafNodeMap } from "./util";
+	import { givenInstanceIdGetLeafNodeMap as IdToLeafNodeMap, assignImageClusterToEachNode } from "./util";
 	import { ScaleOut } from "svelte-loading-spinners";
 	import { imagesEndpoint } from "./stores/endPoints";
 	import {
@@ -21,7 +21,9 @@
 		showMisclassifications,
 		selectedParent,
 	} from "./stores/sidebarStore";
+	import { filteredInstances, allInstances, hasActiveFilters } from "./stores/filterStore";
 	import * as links from "./links";
+	import * as d3 from "d3";
 
 	import Sidebar from "./components/Sidebar.svelte";
 	import DendroMap from "./components/dendroMap/DendroMap.svelte";
@@ -53,8 +55,14 @@
 
 		return { leafIdMap, leafNodes };
 	}
+
 	async function formatAndStoreDendrogram(tree, classes) {
+		// Store the original tree for DendroMap
 		rootNode = tree;
+		
+		// Create the formatted version for our internal use
+		formattedDendrogramData = formatDendrogram(tree, true);
+		
 		const { leafIdMap, leafNodes } = processData(tree);
 		// change the visualization based on provided information
 		const firstLeafNode = leafNodes[0];
@@ -76,6 +84,7 @@
 		storeDataGlobally(output);
 		imagesEndpoint.set(selectedOption.image_filepath);
 	}
+
 	async function fetchData() {
 		showTreemap = await false;
 		if (dataCache === null) {
@@ -90,6 +99,7 @@
 		);
 		showTreemap = await true;
 	}
+
 	async function fetchClassedData(selectedClass) {
 		showTreemap = await false;
 		classClusteringsPresent = false;
@@ -110,6 +120,7 @@
 		classClusteringsPresent = true;
 		showTreemap = await true;
 	}
+
 	function silenceConsoleLogs() {
 		console.log("console log is silenced 😴");
 		console.log = () => {};
@@ -130,6 +141,167 @@
 				callback(undefined);
 			}
 		});
+	}
+
+	// Format dendrogram function with safety checks
+	function formatDendrogram(unformattedRootNode, hasPredictions = false) {
+		function forEachLeaf(parent, callback) {
+			if (parent.leaf || !parent.children || parent.children.length === 0) {
+				callback(parent);
+				return;
+			}
+			parent.children.forEach((child) => {
+				forEachLeaf(child, callback);
+			});
+		}
+		
+		// remove this by init value as 1 for leaves in python
+		forEachLeaf(unformattedRootNode, (node) => {
+			node.value = 1;
+			if (hasPredictions && node.correct_count !== undefined) {
+				node.correct = node.correct_count === 1;
+			}
+		});
+		
+		const hierarchicalData = d3
+			.hierarchy(unformattedRootNode)
+			.sum((d) => d.value || 1);
+		
+		console.log(hierarchicalData);
+		assignImageClusterToEachNode(hierarchicalData); // creates a cluster property on each node in the tree
+		return hierarchicalData;
+	}
+
+	// Create a filtered tree that maintains hierarchical structure
+	function createFilteredTreeFromInstances(filteredInstances, originalTree) {
+		console.log("Creating filtered tree from", filteredInstances.length, "instances");
+		
+		if (filteredInstances.length === 0) {
+			// Return empty tree
+			return {
+				leaf: false,
+				node_index: 999999,
+				node_count: 0,
+				value: 1,
+				merging_distance: 0,
+				children: []
+			};
+		}
+
+		if (filteredInstances.length === 1) {
+			// Single instance - create simple tree
+			const instance = filteredInstances[0];
+			return {
+				leaf: false,
+				node_index: 999998,
+				node_count: 1,
+				value: 1,
+				merging_distance: 0,
+				children: [{
+					...instance,
+					leaf: true,
+					value: 1,
+					node_count: 1,
+					children: undefined
+				}]
+			};
+		}
+
+		// For multiple instances, create a simple binary tree structure
+		// This ensures the layout algorithm can handle it properly
+		function createSimpleTree(instances, nodeIndex = 999997) {
+			if (instances.length === 1) {
+				return {
+					...instances[0],
+					leaf: true,
+					value: 1,
+					node_count: 1,
+					children: undefined
+				};
+			}
+
+			if (instances.length === 2) {
+				return {
+					leaf: false,
+					node_index: nodeIndex,
+					node_count: 2,
+					value: 1,
+					merging_distance: 1,
+					children: [
+						{
+							...instances[0],
+							leaf: true,
+							value: 1,
+							node_count: 1,
+							children: undefined
+						},
+						{
+							...instances[1],
+							leaf: true,
+							value: 1,
+							node_count: 1,
+							children: undefined
+						}
+					]
+				};
+			}
+
+			// Split instances in half and create subtrees
+			const mid = Math.floor(instances.length / 2);
+			const leftInstances = instances.slice(0, mid);
+			const rightInstances = instances.slice(mid);
+
+			return {
+				leaf: false,
+				node_index: nodeIndex,
+				node_count: instances.length,
+				value: 1,
+				merging_distance: 1,
+				children: [
+					createSimpleTree(leftInstances, nodeIndex - 1000),
+					createSimpleTree(rightInstances, nodeIndex - 2000)
+				]
+			};
+		}
+
+		const filteredTree = createSimpleTree(filteredInstances);
+		console.log("Created simple filtered tree with", filteredInstances.length, "instances");
+		return filteredTree;
+	}
+
+	// Handle filtered data changes - REBUILD THE TREE with hierarchical structure
+	function handleDataFiltered(event) {
+		const { filteredInstances: newFilteredInstances, activeFilters } = event.detail;
+		
+		console.log("Filter event received:", newFilteredInstances.length, "instances,", activeFilters.length, "active filters");
+		
+		if (activeFilters.length > 0 && newFilteredInstances.length > 0) {
+			// Create a filtered tree that maintains hierarchical structure
+			const filteredTree = createFilteredTreeFromInstances(newFilteredInstances, dataCache.tree);
+			
+			// Validate the filtered tree before using it
+			if (filteredTree && typeof filteredTree === 'object' && filteredTree.value !== undefined) {
+				rootNode = filteredTree;
+				console.log("Using filtered tree with hierarchical structure:", filteredTree);
+			} else {
+				console.error("Invalid filtered tree created, falling back to original tree");
+				rootNode = dataCache.tree;
+			}
+		} else {
+			// Use original tree
+			rootNode = dataCache.tree;
+			console.log("Using original tree");
+		}
+		
+		// Clear current selection when filters change
+		selectedImage.set(null);
+		selectedParent.set(rootNode);
+		
+		// Force a re-render by toggling showTreemap
+		showTreemap = false;
+		setTimeout(() => {
+			showTreemap = true;
+		}, 100); // Increased timeout to ensure proper cleanup
 	}
 
 	// props
@@ -179,6 +351,7 @@
 	let dendrogramData;
 	let treeClasses;
 	let rootNode;
+	let formattedDendrogramData;
 
 	// on change of the dataset update the dataset
 	$: {
@@ -191,6 +364,14 @@
 	}
 	$: {
 		selectedParent.set(currentParentCluster);
+	}
+
+	// Watch for filtered data changes - Clear highlights since we're filtering the tree itself
+	$: if ($hasActiveFilters && $filteredInstances.length !== $allInstances.length) {
+		// Clear highlights since we're actually filtering the dataset
+		imagesToHighlight.set([]);
+	} else if (!$hasActiveFilters) {
+		imagesToHighlight.set([]);
 	}
 </script>
 
@@ -225,6 +406,7 @@
 					console.log(e.detail);
 					showTreemap = await true;
 				}}
+				on:dataFiltered={handleDataFiltered}
 				classes={treeClasses}
 				{options}
 				bind:selectedOption={selectedOptionIndex}
@@ -258,13 +440,52 @@
 						return totalLabel;
 					}}
 					imageTitleCallback={(d) => {
-						let titleMsg = `Click to select image ${d.instance_index}`;
+						let titleMsg = `Image ${d.instance_index}`;
+						
+						// Add class information
 						if ($hasTrueClass) {
-							titleMsg += `\ntrue class: ${d.true_class}`;
+							titleMsg += `\nTrue class: ${d.true_class}`;
 						}
 						if ($hasPredictedClass) {
-							titleMsg += `\npred class: ${d.predicted_class}`;
+							titleMsg += `\nPredicted class: ${d.predicted_class}`;
 						}
+						
+						// Add engagement metrics
+						if (d.Likes !== undefined) {
+							titleMsg += `\nLikes: ${new Intl.NumberFormat().format(d.Likes)}`;
+						}
+						if (d.Comments !== undefined) {
+							titleMsg += `\nComments: ${new Intl.NumberFormat().format(d.Comments)}`;
+						}
+						if (d.Views !== undefined) {
+							titleMsg += `\nViews: ${new Intl.NumberFormat().format(d.Views)}`;
+						}
+		
+						// Add account information
+						if (d.Account) {
+							titleMsg += `\nAccount: ${d.Account}`;
+						}
+						
+						// Add post date
+						if (d['Post Created']) {
+							try {
+								const date = new Date(d['Post Created']).toLocaleDateString();
+								titleMsg += `\nPosted: ${date}`;
+							} catch {
+								titleMsg += `\nPosted: ${d['Post Created']}`;
+							}
+						}
+						
+						// Add description preview
+						if (d.Description) {
+							const shortDesc = d.Description.length > 50 
+								? d.Description.substring(0, 50) + "..." 
+								: d.Description;
+							titleMsg += `\nDescription: ${shortDesc}`;
+						}
+						
+						titleMsg += `\n\nClick to select and view full details`;
+						
 						return titleMsg;
 					}}
 					bind:currentParentCluster

@@ -210,7 +210,7 @@ export function classCountsLabel(
 
 export function formatDendrogram(unformattedRootNode, hasPredictions = false) {
 	function forEachLeaf(parent, callback) {
-		if (parent.leaf) {
+		if (parent.leaf || !parent.children || parent.children.length === 0) {
 			callback(parent);
 			return;
 		}
@@ -218,16 +218,19 @@ export function formatDendrogram(unformattedRootNode, hasPredictions = false) {
 			forEachLeaf(child, callback);
 		});
 	}
+	
 	// remove this by init value as 1 for leaves in python
 	forEachLeaf(unformattedRootNode, (node) => {
 		node.value = 1;
-		if (hasPredictions) {
+		if (hasPredictions && node.correct_count !== undefined) {
 			node.correct = node.correct_count === 1;
 		}
 	});
+	
 	const hierarchicalData = d3
 		.hierarchy(unformattedRootNode)
 		.sum((d) => d.value);
+	
 	console.log(hierarchicalData);
 	assignImageClusterToEachNode(hierarchicalData); // creates a cluster property on each node in the tree
 	return hierarchicalData;
